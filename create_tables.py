@@ -6,6 +6,7 @@ from app.core.database import Base, engine
 
 # Import all models so Base.metadata knows about them
 import app.models.user  # noqa: F401
+import app.models.refresh_token  # noqa: F401
 import app.models.announcement  # noqa: F401
 import app.models.chat  # noqa: F401
 

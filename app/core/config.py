@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "change-me-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_SECONDS: int = 3600
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
     ANTHROPIC_API_KEY: str = ""
     OPENAI_API_KEY: str = ""

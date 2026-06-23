@@ -9,7 +9,7 @@ from app.models.user import User
 
 async def main() -> None:
     async with AsyncSessionLocal() as db:
-        user = User(email="test@example.com", hashed_password=hash_password("password123"))
+        user = User(email="test@example.com", name="테스트 유저", hashed_password=hash_password("password123"))
         db.add(user)
         await db.commit()
         await db.refresh(user)
