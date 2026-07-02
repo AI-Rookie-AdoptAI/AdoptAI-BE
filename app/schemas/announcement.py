@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
+
+from app.schemas.slots import ApiSlots
 
 
 class AnnouncementStatus(str, Enum):
@@ -14,45 +16,47 @@ class AnnouncementStatus(str, Enum):
     CLOSED = "closed"
 
 
-class PetInfo(BaseModel):
-    species: str
-    breed: str | None = None
-    gender: Literal["male", "female", "unknown"]
-    estimated_age: str | None = None
-    weight: str | None = None
-    health_conditions: list[str] = []
-    neutered: bool | None = None
-    vaccinated: bool | None = None
-    characteristics: list[str] = []
+class AnnouncementPetInfo(ApiSlots):
+    name: str | None = None
+    species: str = "dog"
 
 
-class AnnouncementResponse(BaseModel):
+class ApiDraftInAnnouncement(BaseModel):
+    pet_name: str
+    title: str
+    description: str
+    pet_info: AnnouncementPetInfo
+    representative_photo: str | None = None
+
+
+class ApiAnnouncement(BaseModel):
     id: str
     status: AnnouncementStatus
-    pet_info: PetInfo | None = None
-    photos: list[str] = []
+    title: str | None = None
     description: str | None = None
+    photos: list[str] = []
+    platform_id: str | None = None
+    session_id: str | None = None  # draft 상태에서만 포함
     created_at: datetime
     updated_at: datetime
-
-
-class AnnouncementDetailResponse(AnnouncementResponse):
-    chat_session_id: str | None = None
-
-
-class AnnouncementUpdate(BaseModel):
-    pet_info: PetInfo | None = None
-    description: str | None = None
+    pet_info: AnnouncementPetInfo | None = None
+    draft: ApiDraftInAnnouncement | None = None
 
 
 class AnnouncementListResponse(BaseModel):
-    items: list[AnnouncementResponse]
+    items: list[ApiAnnouncement]
     total: int
     page: int
-    size: int
+    per_page: int
 
 
-class PublishResponse(BaseModel):
+class AnnouncementUpdate(BaseModel):
+    pet_info: AnnouncementPetInfo | None = None
+    description: str | None = None
+    title: str | None = None
+
+
+class PublishAnnouncementResponse(BaseModel):
     id: str
     status: AnnouncementStatus
     updated_at: datetime

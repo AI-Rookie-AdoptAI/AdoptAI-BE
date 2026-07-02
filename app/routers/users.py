@@ -29,11 +29,6 @@ def _to_user_response(user: User) -> UserResponse:
     )
 
 
-@router.get("/me", response_model=UserResponse, summary="내 프로필 조회")
-async def get_me(current_user: User = Depends(get_current_user)) -> UserResponse:
-    return _to_user_response(current_user)
-
-
 @router.patch("/me", response_model=UserResponse, summary="프로필 수정")
 async def update_me(
     body: UpdateUserRequest,

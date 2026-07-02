@@ -157,10 +157,11 @@ PATCH  /shelters/me
 # 채팅 (입양 공고 작성)
 POST   /chat/sessions
 GET    /chat/sessions/{id}/messages
-POST   /chat/sessions/{id}/messages      # text, quick_reply
-POST   /chat/sessions/{id}/images        # 사진 1~10장
-POST   /chat/sessions/{id}/voice         # 음성 메모
-POST   /chat/sessions/{id}/publish       # 공고 게시
+POST   /chat/sessions/{id}/messages          # text, quick_reply
+POST   /chat/sessions/{id}/messages/stream   # SSE 스트리밍
+POST   /chat/sessions/{id}/images            # 사진 1~10장
+POST   /chat/sessions/{id}/voice             # 음성 메모
+POST   /chat/sessions/{id}/publish           # 공고 게시
 
 # 슬롯 스키마
 GET    /slots/schema
@@ -170,10 +171,7 @@ GET    /slots/example
 
 # 공고 관리
 GET    /announcements
-POST   /announcements
 GET    /announcements/{id}
-PATCH  /announcements/{id}
-POST   /announcements/{id}/publish
 
 # 파일 업로드
 POST   /uploads/image
@@ -187,13 +185,13 @@ POST   /uploads/audio
 개발 환경에서는 **PostgreSQL만** 컨테이너로 실행하고, 앱 서버는 로컬에서 `--reload`로 띄우는 구성입니다.
 
 ```bash
-# DB만 실행
+# DB만 실행 (기본)
 docker compose up -d db
 
-# 전체 실행 (앱 포함)
-docker compose up
+# 전체 실행 (앱 포함) — api 서비스는 profile "full" 에 속함
+docker compose --profile full up
 ```
 
 `docker-compose.yml` 참고:
 - **db**: PostgreSQL 16, 포트 `5432`
-- **api**: FastAPI 앱, 포트 `8000` (전체 실행 시)
+- **api**: FastAPI 앱, 포트 `8000` (`--profile full` 로 실행 시)

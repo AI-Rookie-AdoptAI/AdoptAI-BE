@@ -164,6 +164,7 @@ async def publish_draft(
     draft: dict,
     platform_id: str | None,
     announcement_id: str,
+    custom_platform: dict | None = None,
 ) -> str:
     """
     초안을 플랫폼에 게시. 소요 시간 문자열 반환.

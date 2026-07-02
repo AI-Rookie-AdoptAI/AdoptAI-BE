@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import decode_token
+from app.models.token_blacklist import TokenBlacklist
 from app.models.user import User
 
 _bearer = HTTPBearer()
@@ -14,7 +15,14 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    user_id = decode_token(credentials.credentials)
+    user_id, jti = decode_token(credentials.credentials)
+
+    blacklisted = await db.execute(
+        select(TokenBlacklist).where(TokenBlacklist.jti == jti)
+    )
+    if blacklisted.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="무효화된 토큰입니다")
+
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user:

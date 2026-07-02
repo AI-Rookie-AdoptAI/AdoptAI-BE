@@ -1,6 +1,9 @@
+import asyncio
+import json
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -176,6 +179,67 @@ async def send_message(
 
 
 @router.post(
+    "/sessions/{session_id}/messages/stream",
+    summary="SSE 스트리밍 텍스트 메시지",
+    response_class=StreamingResponse,
+)
+async def stream_message(
+    session_id: str,
+    body: SendMessageRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    await _require_session(session_id, db, current_user)
+    history = await _get_history(session_id, db)
+
+    user_row = await _persist_message(
+        session_id, "user", body.type, body.content, body.metadata, db
+    )
+    history.append({"role": "user", "content": body.content})
+
+    ai_msgs, stage, draft = await ai_service.process_text_message(
+        body.content, history, body.type, body.metadata
+    )
+
+    assistant_rows: list[Message] = []
+    for ai_msg in ai_msgs:
+        row = await _persist_message(
+            session_id, "assistant", ai_msg.type, ai_msg.content, ai_msg.metadata, db
+        )
+        assistant_rows.append(row)
+
+    await db.commit()
+    await db.refresh(user_row)
+    for row in assistant_rows:
+        await db.refresh(row)
+
+    full_content = " ".join(m.content for m in ai_msgs)
+
+    async def event_generator():
+        # 토큰 단위 스트리밍 (단어 단위 시뮬레이션)
+        for word in full_content.split():
+            if await request.is_disconnected():
+                break
+            yield f"data: {json.dumps({'type': 'token', 'delta': word + ' '}, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.05)
+
+        # 완성된 메시지 이벤트
+        for row in assistant_rows:
+            msg_dict = _msg_to_schema(row).model_dump(mode="json")
+            yield f"data: {json.dumps({'type': 'message', 'message': msg_dict}, ensure_ascii=False)}\n\n"
+
+        # 종료 이벤트
+        done_payload: dict = {"type": "done", "stage": stage.value, "draft": None}
+        if draft:
+            done_payload["draft"] = draft.model_dump(mode="json")
+        yield f"data: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@router.post(
     "/sessions/{session_id}/images",
     response_model=ImageUploadResponse,
     summary="반려동물 사진 업로드 (1~10장)",
@@ -225,7 +289,7 @@ async def upload_images(
 async def upload_voice(
     session_id: str,
     audio: UploadFile = File(..., description="audio/webm 또는 audio/mp4"),
-    duration_sec: float = Form(..., description="녹음 길이 (초)"),
+    duration_sec: str = Form(..., description="녹음 길이 (초, 숫자 문자열)"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ChatMessageResponse:
@@ -233,9 +297,10 @@ async def upload_voice(
     history = await _get_history(session_id, db)
 
     audio_url, _ = await save_file(audio, "audio")
+    duration_float = float(duration_sec)
 
     transcribed, ai_msgs, stage, draft = await ai_service.transcribe_and_process(
-        audio_url, duration_sec, history
+        audio_url, duration_float, history
     )
 
     user_row = await _persist_message(
@@ -243,7 +308,7 @@ async def upload_voice(
         "user",
         MessageType.VOICE,
         transcribed,
-        {"voice_duration": duration_sec, "audio_url": audio_url},
+        {"voice_duration": duration_float, "audio_url": audio_url},
         db,
     )
 
@@ -292,9 +357,11 @@ async def publish(
         ann.pet_info or {},
         body.platform_id,
         ann.id,
+        body.custom_platform.model_dump() if body.custom_platform else None,
     )
 
     ann.status = "published"
+    ann.platform_id = body.platform_id
     ann.updated_at = datetime.now(timezone.utc)
     await db.commit()
 

@@ -27,7 +27,6 @@ class MessageType(str, Enum):
     PET_INFO_CARD = "pet_info_card"
     DRAFT_CARD = "draft_card"
     QUICK_CHIPS = "quick_chips"
-    FACT_BADGE = "fact_badge"
     QUICK_REPLY = "quick_reply"
 
 
@@ -85,8 +84,17 @@ class ImageUploadResponse(BaseModel):
     parsed_pet_info: ParsedPetInfo | None = None
 
 
+class CustomPlatform(BaseModel):
+    image_ratio: str | None = None
+    image_width: int | None = None
+    image_height: int | None = None
+    tone: Literal["friendly", "warm", "formal", "informative"] | None = None
+    tone_description: str | None = None
+
+
 class PublishRequest(BaseModel):
-    platform_id: str | None = None
+    platform_id: Literal["instagram", "kakao", "naver_cafe", "poinhand", "custom"] | None = None
+    custom_platform: CustomPlatform | None = None
 
 
 class PublishResponse(BaseModel):

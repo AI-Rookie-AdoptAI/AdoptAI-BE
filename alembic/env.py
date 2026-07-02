@@ -16,6 +16,7 @@ import app.models.announcement  # noqa: F401
 import app.models.chat  # noqa: F401
 import app.models.shelter  # noqa: F401
 import app.models.notification_setting  # noqa: F401
+import app.models.token_blacklist  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)

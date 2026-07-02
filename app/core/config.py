@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     DATABASE_SSL: bool = False  # Supabase 등 외부 DB는 True
     SECRET_KEY: str = "change-me-in-production"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_SECONDS: int = 3600
+    ACCESS_TOKEN_EXPIRE_SECONDS: int = 86400
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
     ANTHROPIC_API_KEY: str = ""
