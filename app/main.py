@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config import settings
-from app.routers import auth, announcements, chat, uploads
+from app.routers import announcements, auth, chat, shelters, slots, uploads, users
 
 app = FastAPI(
     title="AdoptAI API",
@@ -34,8 +34,11 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
 API_PREFIX = "/api/v1"
 
 app.include_router(auth.router, prefix=API_PREFIX)
+app.include_router(users.router, prefix=API_PREFIX)
+app.include_router(shelters.router, prefix=API_PREFIX)
 app.include_router(announcements.router, prefix=API_PREFIX)
 app.include_router(chat.router, prefix=API_PREFIX)
+app.include_router(slots.router, prefix=API_PREFIX)
 app.include_router(uploads.router, prefix=API_PREFIX)
 
 
