@@ -1,9 +1,15 @@
+import logging
+import os
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
-from app.routers import announcements, auth, chat, shelters, slots, uploads, users
+from app.routers import announcements, auth, chat, oauth, shelters, slots, uploads, users
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="AdoptAI API",
@@ -25,15 +31,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+os.makedirs(settings.LOCAL_UPLOAD_DIR, exist_ok=True)
+app.mount("/static", StaticFiles(directory=settings.LOCAL_UPLOAD_DIR), name="static")
+
 
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Unhandled API error on %s %s", request.method, request.url.path, exc_info=exc)
     return JSONResponse(status_code=500, content={"detail": "서버 내부 오류가 발생했습니다"})
 
 
 API_PREFIX = "/api/v1"
 
 app.include_router(auth.router, prefix=API_PREFIX)
+app.include_router(oauth.router, prefix=API_PREFIX)
 app.include_router(users.router, prefix=API_PREFIX)
 app.include_router(shelters.router, prefix=API_PREFIX)
 app.include_router(announcements.router, prefix=API_PREFIX)

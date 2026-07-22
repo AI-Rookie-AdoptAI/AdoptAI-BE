@@ -1,0 +1,30 @@
+name: Quality
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # 운영 이미지(Dockerfile)와 같은 파이썬으로 검증한다.
+          python-version: "3.11"
+          cache: pip
+      - name: Install validation tools
+        run: pip install -r requirements-dev.txt alembic
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Type check (mypy)
+        run: mypy app tests bootstrap_database.py seed_user.py
+      - name: Compile all Python modules
+        run: python -m compileall -q app alembic bootstrap_database.py seed_user.py
+      - name: Test business rules
+        run: python -m unittest discover -s tests -v
+      - name: Require a single migration head
+        run: test "$(alembic heads | wc -l)" -eq 1

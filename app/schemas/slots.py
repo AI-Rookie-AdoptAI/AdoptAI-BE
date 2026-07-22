@@ -2,15 +2,25 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class AgeValue(BaseModel):
-    value: int
-    unit: Literal["년", "개월"]
+    value: float
+    unit: Literal["년", "개월", "일"]
+
+
+class ContactMethod(BaseModel):
+    type: Literal["phone", "instagram", "kakao", "other"]
+    value: str
+
+
+# AI가 만들어 오는 값이라 허용 범위를 한 곳에서만 정의하고 전 스키마가 공유한다.
+Species = Literal["dog", "cat", "other"]
 
 
 class ApiSlots(BaseModel):
+    species: Species | None = None
     # 필수 슬롯
     breed: str | None = None
     estimated_age: AgeValue | None = None
@@ -19,10 +29,10 @@ class ApiSlots(BaseModel):
     weight_kg: float | None = None
     rescue_region: str | None = None
     rescue_date: str | None = None  # "YYYY-MM-DD"
-    shelter_contact: str | None = None
+    contact_methods: list[ContactMethod] = Field(default_factory=list)
     # 선택 슬롯
     appearance: str | None = None
-    health_conditions: list[str] = []
+    health_conditions: list[str] = Field(default_factory=list)
     personality_notes: str | None = None
 
     @field_validator("rescue_date")
@@ -44,7 +54,7 @@ REQUIRED_KEYS = [
     "weight_kg",
     "rescue_region",
     "rescue_date",
-    "shelter_contact",
+    "contact_methods",
 ]
 
 OPTIONAL_KEYS = [

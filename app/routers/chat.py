@@ -1,18 +1,27 @@
 import asyncio
 import json
-from datetime import datetime, timezone
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.dependencies import get_current_user
+from app.domain.chat_workflow import can_generate_platform_drafts
 from app.models.announcement import Announcement
 from app.models.chat import ChatSession, Message
 from app.models.user import User
+from app.schemas.announcement import (
+    GeneratePlatformDraftsRequest,
+    GeneratePlatformDraftsResponse,
+    PlatformVariant,
+)
 from app.schemas.chat import (
+    ApiDraft,
     ApiMessage,
     ChatMessageResponse,
     ImageUploadResponse,
@@ -24,7 +33,8 @@ from app.schemas.chat import (
     Stage,
 )
 from app.services import ai as ai_service
-from app.services.storage import save_file
+from app.services import stt as stt_service
+from app.services.storage import FileTooLargeError, delete_file, discard_local, local_path, save_file
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -66,6 +76,11 @@ async def _get_history(session_id: str, db: AsyncSession) -> list[dict]:
     return [{"role": m.role, "content": m.content} for m in result.scalars().all()]
 
 
+def _ensure_session_writable(session: ChatSession) -> None:
+    if session.stage in {Stage.PUBLISHING.value, Stage.PUBLISHED.value}:
+        raise HTTPException(status_code=409, detail="완료된 채팅 세션에는 내용을 추가할 수 없습니다")
+
+
 async def _persist_message(
     session_id: str,
     role: str,
@@ -84,6 +99,74 @@ async def _persist_message(
     db.add(msg)
     await db.flush()
     return msg
+
+
+async def _persist_draft(
+    session: ChatSession,
+    draft: ApiDraft,
+    db: AsyncSession,
+) -> None:
+    """Keep the announcement and chat workflow in sync as one transaction."""
+    if not session.announcement_id:
+        return
+    result = await db.execute(
+        select(Announcement).where(Announcement.id == session.announcement_id)
+    )
+    announcement = result.scalar_one()
+    if not draft.representative_photo and announcement.photos:
+        draft.representative_photo = announcement.photos[0]
+    payload = draft.model_dump(mode="json")
+    announcement.title = draft.title
+    announcement.description = draft.description
+    announcement.pet_info = payload["pet_info"]
+    announcement.draft = payload
+    announcement.updated_at = datetime.now(UTC)
+
+
+async def _process_user_input(
+    session: ChatSession,
+    content: str,
+    message_type: MessageType,
+    metadata: dict | None,
+    history: list[dict],
+) -> tuple[list[ApiMessage], Stage, ApiDraft | None]:
+    """Route initial typed input and follow-up answers through one STT slot pipeline."""
+    pipeline: dict | None = None
+    if session.stt_session_id and session.stage == Stage.CLARIFYING.value:
+        pipeline = await stt_service.answer(session.stt_session_id, content)
+    elif session.stage in {
+        Stage.START.value,
+        Stage.UPLOADING.value,
+        Stage.PROCESSING.value,
+        Stage.CLARIFYING.value,
+    }:
+        pipeline = await stt_service.start(content)
+        session.stt_session_id = pipeline["session_id"]
+
+    if pipeline is None:
+        if session.stage in {Stage.DRAFT_READY.value, Stage.EDITING.value}:
+            return [ai_service._msg(
+                MessageType.TEXT,
+                "초안이 이미 완성됐어요. 공고 이름과 내용은 내 공고 화면에서 수정할 수 있어요.",
+            )], Stage.DRAFT_READY, None
+        return [ai_service._msg(
+            MessageType.TEXT,
+            "이 단계에서는 새 정보를 처리할 수 없어요. 새 공고 작성을 시작해 주세요.",
+        )], Stage(session.stage), None
+
+    session.stt_slots = pipeline.get("slots")
+    ai_msgs, stage = ai_service.pipeline_messages(pipeline)
+    draft = None
+    if pipeline.get("completed") and pipeline.get("ready_for_notice") and session.stt_session_id:
+        completed = await stt_service.complete(session.stt_session_id)
+        draft = ai_service.draft_from_completion(completed)
+        ai_msgs.append(ai_service._msg(
+            MessageType.DRAFT_CARD,
+            "공고 초안을 만들었어요. 내용을 확인해 주세요!",
+            {"draft": draft.model_dump(mode="json")},
+        ))
+        stage = Stage.DRAFT_READY
+    return ai_msgs, stage, draft
 
 
 @router.post(
@@ -105,14 +188,33 @@ async def create_session(
     await db.flush()
 
     ann.chat_session_id = session.id
-    ann.updated_at = datetime.now(timezone.utc)
+    ann.updated_at = datetime.now(UTC)
 
     await db.commit()
     await db.refresh(session)
 
     return SessionResponse(
         id=session.id,
-        stage=Stage.START,
+        stage=Stage(session.stage),
+        announcement_id=session.announcement_id,
+        created_at=session.created_at,
+    )
+
+
+@router.get(
+    "/sessions/{session_id}",
+    response_model=SessionResponse,
+    summary="채팅 세션 진행 상태 조회",
+)
+async def get_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SessionResponse:
+    session = await _require_session(session_id, db, current_user)
+    return SessionResponse(
+        id=session.id,
+        stage=Stage(session.stage),
         announcement_id=session.announcement_id,
         created_at=session.created_at,
     )
@@ -146,7 +248,8 @@ async def send_message(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ChatMessageResponse:
-    await _require_session(session_id, db, current_user)
+    session = await _require_session(session_id, db, current_user)
+    _ensure_session_writable(session)
     history = await _get_history(session_id, db)
 
     user_row = await _persist_message(
@@ -154,9 +257,16 @@ async def send_message(
     )
     history.append({"role": "user", "content": body.content})
 
-    ai_msgs, stage, draft = await ai_service.process_text_message(
-        body.content, history, body.type, body.metadata
-    )
+    try:
+        ai_msgs, stage, draft = await _process_user_input(
+            session, body.content, body.type, body.metadata, history
+        )
+    except stt_service.SttServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    session.stage = stage.value
+    if draft:
+        await _persist_draft(session, draft, db)
 
     assistant_rows: list[Message] = []
     for ai_msg in ai_msgs:
@@ -179,6 +289,52 @@ async def send_message(
 
 
 @router.post(
+    "/sessions/{session_id}/platform-drafts",
+    response_model=GeneratePlatformDraftsResponse,
+    summary="완성된 슬롯으로 플랫폼별 공고 생성",
+)
+async def generate_platform_drafts(
+    session_id: str,
+    body: GeneratePlatformDraftsRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> GeneratePlatformDraftsResponse:
+    session = await _require_session(session_id, db, current_user)
+    if not session.announcement_id or not session.stt_slots:
+        raise HTTPException(status_code=409, detail="플랫폼별 공고를 만들 슬롯 정보가 없습니다")
+    ann_result = await db.execute(
+        select(Announcement).where(Announcement.id == session.announcement_id)
+    )
+    announcement = ann_result.scalar_one()
+    if not can_generate_platform_drafts(session.stage, has_draft=bool(announcement.draft)):
+        raise HTTPException(status_code=409, detail="초안이 완성된 뒤 플랫폼별 공고를 만들 수 있습니다")
+
+    try:
+        payload = await stt_service.generate_all(session.stt_slots)
+    except stt_service.SttServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    notices = payload.get("notices") or {}
+    variants: dict[str, PlatformVariant] = {}
+    for platform in dict.fromkeys(body.platforms):
+        notice = notices.get(platform)
+        if not notice:
+            raise HTTPException(status_code=502, detail=f"{platform} 공고 생성 결과가 없습니다")
+        variants[platform] = PlatformVariant.model_validate(notice)
+
+    draft_payload = dict(announcement.draft or {})
+    draft_payload["platform_variants"] = {
+        key: value.model_dump(mode="json") for key, value in variants.items()
+    }
+    announcement.draft = draft_payload
+    announcement.status = "in_review"
+    announcement.updated_at = datetime.now(UTC)
+    await db.commit()
+
+    return GeneratePlatformDraftsResponse(variants=variants)
+
+
+@router.post(
     "/sessions/{session_id}/messages/stream",
     summary="SSE 스트리밍 텍스트 메시지",
     response_class=StreamingResponse,
@@ -190,7 +346,8 @@ async def stream_message(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> StreamingResponse:
-    await _require_session(session_id, db, current_user)
+    session = await _require_session(session_id, db, current_user)
+    _ensure_session_writable(session)
     history = await _get_history(session_id, db)
 
     user_row = await _persist_message(
@@ -198,9 +355,12 @@ async def stream_message(
     )
     history.append({"role": "user", "content": body.content})
 
-    ai_msgs, stage, draft = await ai_service.process_text_message(
-        body.content, history, body.type, body.metadata
-    )
+    try:
+        ai_msgs, stage, draft = await _process_user_input(
+            session, body.content, body.type, body.metadata, history
+        )
+    except stt_service.SttServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     assistant_rows: list[Message] = []
     for ai_msg in ai_msgs:
@@ -209,6 +369,10 @@ async def stream_message(
         )
         assistant_rows.append(row)
 
+    session.stage = stage.value
+    if draft:
+        await _persist_draft(session, draft, db)
+
     await db.commit()
     await db.refresh(user_row)
     for row in assistant_rows:
@@ -216,7 +380,7 @@ async def stream_message(
 
     full_content = " ".join(m.content for m in ai_msgs)
 
-    async def event_generator():
+    async def event_generator() -> AsyncGenerator[str, None]:
         # 토큰 단위 스트리밍 (단어 단위 시뮬레이션)
         for word in full_content.split():
             if await request.is_disconnected():
@@ -252,28 +416,91 @@ async def upload_images(
 ) -> ImageUploadResponse:
     if not images or len(images) > 10:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="이미지는 1~10장 업로드 가능합니다")
+    for image in images:
+        if not (image.content_type or "").startswith("image/"):
+            raise HTTPException(status_code=415, detail="지원하지 않는 이미지 형식입니다")
+        if image.size is not None and image.size > settings.MAX_IMAGE_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="허용된 이미지 파일 크기를 초과했습니다")
 
-    await _require_session(session_id, db, current_user)
+    session = await _require_session(session_id, db, current_user)
+    _ensure_session_writable(session)
     history = await _get_history(session_id, db)
 
     image_urls: list[str] = []
-    for img in images:
-        url, _ = await save_file(img, "images")
-        image_urls.append(url)
+    local_paths: list[str] = []
+    keys: list[str] = []
+    try:
+        for img in images:
+            url, key = await save_file(
+                img,
+                "images",
+                max_bytes=settings.MAX_IMAGE_UPLOAD_BYTES,
+                # vision이 로컬 경로로 읽으므로 S3 백엔드에서도 사본을 남긴다.
+                keep_local=True,
+            )
+            image_urls.append(url)
+            keys.append(key)
+            local_paths.append(local_path(key))
+    except FileTooLargeError as exc:
+        for key in keys:
+            await delete_file(key)
+        raise HTTPException(status_code=413, detail="허용된 이미지 파일 크기를 초과했습니다") from exc
+    except Exception:
+        for key in keys:
+            await delete_file(key)
+        raise
 
-    ai_msgs, stage, rep_idx, confidence, parsed_pet_info = await ai_service.process_images(
-        image_urls, history
+    try:
+        ai_msgs, stage, rep_idx, confidence, parsed_pet_info = await ai_service.process_images(
+            image_urls, local_paths, history
+        )
+    finally:
+        for key in keys:
+            discard_local(key)
+
+    user_row = await _persist_message(
+        session_id,
+        "user",
+        MessageType.IMAGE_GROUP,
+        f"사진 {len(image_urls)}장을 업로드했어요.",
+        {
+            "image_urls": image_urls,
+            "ai_pick_index": rep_idx,
+            "ai_confidence": confidence,
+        },
+        db,
     )
 
+    session.stage = stage.value
+    if session.announcement_id:
+        ann_result = await db.execute(
+            select(Announcement).where(Announcement.id == session.announcement_id)
+        )
+        announcement = ann_result.scalar_one()
+        announcement.photos = (
+            [image_urls[rep_idx], *image_urls[:rep_idx], *image_urls[rep_idx + 1 :]]
+            if 0 <= rep_idx < len(image_urls)
+            else image_urls
+        )
+        if parsed_pet_info:
+            announcement.pet_info = parsed_pet_info.model_dump(mode="json")
+        announcement.updated_at = datetime.now(UTC)
+
+    assistant_rows: list[Message] = []
     for ai_msg in ai_msgs:
-        await _persist_message(
+        row = await _persist_message(
             session_id, "assistant", ai_msg.type, ai_msg.content, ai_msg.metadata, db
         )
+        assistant_rows.append(row)
 
     await db.commit()
+    await db.refresh(user_row)
+    for row in assistant_rows:
+        await db.refresh(row)
 
     return ImageUploadResponse(
-        assistant_messages=ai_msgs,
+        user_message=_msg_to_schema(user_row),
+        assistant_messages=[_msg_to_schema(row) for row in assistant_rows],
         stage=stage,
         representative_index=rep_idx,
         ai_confidence=confidence,
@@ -293,22 +520,53 @@ async def upload_voice(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> ChatMessageResponse:
-    await _require_session(session_id, db, current_user)
+    session = await _require_session(session_id, db, current_user)
+    _ensure_session_writable(session)
     history = await _get_history(session_id, db)
 
-    audio_url, _ = await save_file(audio, "audio")
-    duration_float = float(duration_sec)
+    try:
+        duration_float = float(duration_sec)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="녹음 길이는 숫자여야 합니다") from exc
+    if duration_float < 0 or duration_float > settings.MAX_AUDIO_DURATION_SECONDS:
+        raise HTTPException(status_code=413, detail="허용된 녹음 시간을 초과했습니다")
+    if audio.size is not None and audio.size > settings.MAX_AUDIO_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="허용된 오디오 파일 크기를 초과했습니다")
+    if audio.content_type not in {
+        "audio/webm", "audio/mp4", "audio/mpeg", "audio/wav", "audio/x-wav",
+        "audio/ogg", "audio/flac", "video/webm", "video/mp4",
+    }:
+        raise HTTPException(status_code=415, detail="지원하지 않는 오디오 형식입니다")
 
-    transcribed, ai_msgs, stage, draft = await ai_service.transcribe_and_process(
-        audio_url, duration_float, history
-    )
+    try:
+        transcribed, pipeline, ai_msgs, stage = await ai_service.transcribe_and_process(
+            audio, duration_float, history
+        )
+        session.stt_session_id = pipeline["session_id"]
+        session.stt_slots = pipeline.get("slots")
+        draft = None
+        if pipeline.get("completed") and pipeline.get("ready_for_notice"):
+            completed = await stt_service.complete(session.stt_session_id)
+            draft = ai_service.draft_from_completion(completed)
+            ai_msgs.append(ai_service._msg(
+                MessageType.DRAFT_CARD,
+                "공고 초안을 만들었어요. 내용을 확인해 주세요!",
+                {"draft": draft.model_dump(mode="json")},
+            ))
+            stage = Stage.DRAFT_READY
+    except stt_service.SttServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    session.stage = stage.value
+    if draft:
+        await _persist_draft(session, draft, db)
 
     user_row = await _persist_message(
         session_id,
         "user",
         MessageType.VOICE,
         transcribed,
-        {"voice_duration": duration_float, "audio_url": audio_url},
+        {"voice_duration": duration_float},
         db,
     )
 
@@ -343,29 +601,11 @@ async def publish(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> PublishResponse:
-    session = await _require_session(session_id, db, current_user)
-
-    if not session.announcement_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="세션에 연결된 공고가 없습니다")
-
-    ann_result = await db.execute(
-        select(Announcement).where(Announcement.id == session.announcement_id)
-    )
-    ann = ann_result.scalar_one()
-
-    time_taken = await ai_service.publish_draft(
-        ann.pet_info or {},
-        body.platform_id,
-        ann.id,
-        body.custom_platform.model_dump() if body.custom_platform else None,
-    )
-
-    ann.status = "published"
-    ann.platform_id = body.platform_id
-    ann.updated_at = datetime.now(timezone.utc)
-    await db.commit()
-
-    return PublishResponse(
-        announcement_id=ann.id,
-        time_taken=time_taken,
+    await _require_session(session_id, db, current_user)
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail=(
+            "외부 플랫폼 자동 게시 기능은 아직 연결되지 않았습니다. "
+            "플랫폼별 파일을 저장한 뒤 해당 플랫폼에서 직접 등록해 주세요."
+        ),
     )

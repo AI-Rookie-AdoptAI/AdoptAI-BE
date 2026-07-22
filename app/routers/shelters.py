@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -58,7 +58,7 @@ async def upsert_my_shelter(
     shelter.email = body.email
     shelter.capacity = body.capacity
     shelter.description = body.description
-    shelter.updated_at = datetime.now(timezone.utc)
+    shelter.updated_at = datetime.now(UTC)
 
     await db.commit()
     await db.refresh(shelter)

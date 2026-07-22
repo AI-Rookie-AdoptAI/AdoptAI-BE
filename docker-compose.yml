@@ -10,6 +10,11 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U adoptai"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   api:
     build: .
@@ -18,10 +23,69 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql+asyncpg://adoptai:adoptai@db:5432/adoptai}
+      LOCAL_UPLOAD_DIR: /var/lib/adoptai/uploads
+      STT_BASE_URL: http://stt:8000
+      VISION_BASE_URL: http://vision:8000
+    volumes:
+      - upload_data:/var/lib/adoptai/uploads
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+      stt:
+        condition: service_started
+      vision:
+        condition: service_started
+    profiles:
+      - full
+
+  stt:
+    build:
+      context: ../STT
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    env_file:
+      - .env
+    environment:
+      STT_INTERNAL_API_KEY: ${STT_INTERNAL_API_KEY:-}
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - whisper_cache:/home/adoptai/.cache/huggingface
+    profiles:
+      - full
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  vision:
+    build:
+      context: ../VISION
+    restart: unless-stopped
+    ports:
+      - "8002:8000"
+    volumes:
+      - whisper_cache:/home/adoptai/.cache/huggingface
+    profiles:
+      - full
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - redis_data:/data
     profiles:
       - full
 
 volumes:
   postgres_data:
+  whisper_cache:
+  redis_data:
+  upload_data:

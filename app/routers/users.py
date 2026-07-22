@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -110,7 +110,7 @@ async def update_notification_settings(
     for field, value in body.model_dump(exclude_none=True).items():
         setattr(setting, field, value)
 
-    setting.updated_at = datetime.now(timezone.utc)
+    setting.updated_at = datetime.now(UTC)
     await db.commit()
     await db.refresh(setting)
     return _to_notif_response(setting)

@@ -1,0 +1,4 @@
+# 품질 게이트 도구. CI(.github/workflows/quality.yml)와 같은 버전을 로컬에서도 쓴다.
+#   pip install -r requirements-dev.txt
+ruff==0.15.22
+mypy==2.3.0

@@ -9,8 +9,6 @@ _connect_args: dict = {}
 if settings.DATABASE_SSL:
     import ssl as _ssl
     _ssl_ctx = _ssl.create_default_context()
-    _ssl_ctx.check_hostname = False
-    _ssl_ctx.verify_mode = _ssl.CERT_NONE
     _connect_args["ssl"] = _ssl_ctx
 
 engine = create_async_engine(

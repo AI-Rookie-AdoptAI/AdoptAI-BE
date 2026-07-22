@@ -1,7 +1,7 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, JSON, String
+from sqlalchemy import JSON, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -15,9 +15,12 @@ class ChatSession(Base):
         String, ForeignKey("announcements.id"), nullable=True, index=True
     )
     status: Mapped[str] = mapped_column(String, default="active", nullable=False)
+    stage: Mapped[str] = mapped_column(String, default="start", nullable=False)
+    stt_session_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    stt_slots: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
 
 
@@ -33,5 +36,5 @@ class Message(Base):
     extra: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )

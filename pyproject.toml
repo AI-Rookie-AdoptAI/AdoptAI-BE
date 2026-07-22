@@ -1,0 +1,40 @@
+# 컨벤션은 문서가 아니라 CI 게이트로 강제한다. 로컬에서도 같은 설정으로 돌아간다:
+#   pip install -r requirements-dev.txt
+#   ruff check . && mypy app tests
+
+[tool.ruff]
+line-length = 120
+# 운영 이미지(Dockerfile)의 파이썬과 맞춘다.
+target-version = "py311"
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+# E/F 기본 + I(import 정렬) + B(bugbear) + UP(구버전 문법)
+select = ["E", "F", "I", "B", "UP"]
+# `class X(str, Enum)`은 pydantic 스키마에서 쓰는 표준 관용구라 유지한다.
+ignore = ["UP042"]
+
+[tool.ruff.lint.isort]
+# 로컬 alembic/ 디렉터리 때문에 alembic 패키지가 1st-party로 분류되는 것을 막는다.
+known-third-party = ["alembic"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI의 의존성 주입은 인자 기본값 호출이 정상 사용법이다.
+extend-immutable-calls = [
+    "fastapi.Body",
+    "fastapi.Cookie",
+    "fastapi.Depends",
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Header",
+    "fastapi.Path",
+    "fastapi.Query",
+]
+
+[tool.mypy]
+python_version = "3.11"
+# CI에서 앱 의존성을 설치하지 않고도 돌 수 있게 서드파티 스텁은 요구하지 않는다.
+ignore_missing_imports = true
+disallow_untyped_defs = true
+warn_unused_ignores = true
+exclude = "^alembic/"

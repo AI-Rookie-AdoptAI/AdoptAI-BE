@@ -1,0 +1,60 @@
+name: Build and dispatch deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/ai-rookie-adoptai/adoptai-be
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # 운영 이미지(Dockerfile)와 같은 파이썬으로 검증한다.
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements-dev.txt alembic
+      - run: ruff check .
+      - run: mypy app tests bootstrap_database.py seed_user.py
+      - run: python -m compileall -q app alembic bootstrap_database.py seed_user.py
+      - run: python -m unittest discover -s tests -v
+      - run: test "$(alembic heads | wc -l)" -eq 1
+
+  build-and-push:
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (immutable sha tag only)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+
+      - name: Dispatch deploy to AdoptAI-Infra
+        # Needs the INFRA_DISPATCH_PAT secret: a fine-grained PAT scoped to
+        # AI-Rookie-AdoptAI/AdoptAI-Infra with contents:write + metadata:read.
+        # GITHUB_TOKEN can't be used here — it has no access to other repos.
+        run: |
+          curl -sSf -X POST \
+            -H "Authorization: Bearer ${{ secrets.INFRA_DISPATCH_PAT }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/AI-Rookie-AdoptAI/AdoptAI-Infra/dispatches \
+            -d '{"event_type":"deploy","client_payload":{"service":"be","tag":"${{ github.sha }}"}}'

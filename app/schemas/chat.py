@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from app.schemas.slots import ApiSlots
+from app.schemas.slots import ApiSlots, Species
 
 
 class Stage(str, Enum):
@@ -32,7 +32,7 @@ class MessageType(str, Enum):
 
 class ApiDraftPetInfo(ApiSlots):
     name: str | None = None
-    species: Literal["dog", "cat", "other"] = "dog"
+    species: Species = "dog"
 
 
 class ApiDraft(BaseModel):
@@ -44,7 +44,7 @@ class ApiDraft(BaseModel):
 
 
 class ParsedPetInfo(ApiSlots):
-    species: Literal["dog", "cat", "other"] | None = None
+    species: Species | None = None
 
 
 class ApiMessage(BaseModel):
@@ -77,6 +77,7 @@ class ChatMessageResponse(BaseModel):
 
 
 class ImageUploadResponse(BaseModel):
+    user_message: ApiMessage
     assistant_messages: list[ApiMessage]
     stage: Stage
     representative_index: int = 0
@@ -93,7 +94,7 @@ class CustomPlatform(BaseModel):
 
 
 class PublishRequest(BaseModel):
-    platform_id: Literal["instagram", "kakao", "naver_cafe", "poinhand", "custom"] | None = None
+    platform_id: Literal["instagram", "daangn", "naver_cafe", "poinhand", "custom"] | None = None
     custom_platform: CustomPlatform | None = None
 
 

@@ -6,17 +6,19 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from app.core.config import settings
-from app.core.database import Base
+import app.models.announcement  # noqa: F401
+import app.models.chat  # noqa: F401
+import app.models.notification_setting  # noqa: F401
+import app.models.oauth_account  # noqa: F401
+import app.models.password_reset_token  # noqa: F401
+import app.models.refresh_token  # noqa: F401
+import app.models.shelter  # noqa: F401
+import app.models.token_blacklist  # noqa: F401
 
 # Import all models so Base.metadata is populated
 import app.models.user  # noqa: F401
-import app.models.refresh_token  # noqa: F401
-import app.models.announcement  # noqa: F401
-import app.models.chat  # noqa: F401
-import app.models.shelter  # noqa: F401
-import app.models.notification_setting  # noqa: F401
-import app.models.token_blacklist  # noqa: F401
+from app.core.config import settings
+from app.core.database import Base
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)

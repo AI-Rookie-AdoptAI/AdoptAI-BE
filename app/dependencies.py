@@ -1,4 +1,4 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,14 +8,18 @@ from app.core.security import decode_token
 from app.models.token_blacklist import TokenBlacklist
 from app.models.user import User
 
-_bearer = HTTPBearer()
+_bearer = HTTPBearer(auto_error=False)
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(_bearer),
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    user_id, jti = decode_token(credentials.credentials)
+    token = credentials.credentials if credentials else request.cookies.get("adopt_access_token")
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="인증이 필요합니다")
+    user_id, jti = decode_token(token)
 
     blacklisted = await db.execute(
         select(TokenBlacklist).where(TokenBlacklist.jti == jti)

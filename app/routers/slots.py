@@ -1,11 +1,11 @@
 from fastapi import APIRouter
-from pydantic import BaseModel
 
 from app.schemas.slots import (
     OPTIONAL_KEYS,
     REQUIRED_KEYS,
     AgeValue,
     ApiSlots,
+    ContactMethod,
     SlotMetaResponse,
     SlotValidateRequest,
     SlotValidateResponse,
@@ -22,8 +22,8 @@ _SLOT_SCHEMA = {
         "estimated_age": {
             "type": "object",
             "properties": {
-                "value": {"type": "integer"},
-                "unit": {"type": "string", "enum": ["년", "개월"]},
+                "value": {"type": "number"},
+                "unit": {"type": "string", "enum": ["년", "개월", "일"]},
             },
             "required": ["value", "unit"],
             "description": "추정 나이",
@@ -33,7 +33,17 @@ _SLOT_SCHEMA = {
         "weight_kg": {"type": "number", "description": "체중 (kg)"},
         "rescue_region": {"type": "string", "description": "구조 지역"},
         "rescue_date": {"type": "string", "format": "date", "description": "구조 일자 (YYYY-MM-DD)"},
-        "shelter_contact": {"type": "string", "description": "보호소 연락처"},
+        "contact_methods": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "type": {"enum": ["phone", "instagram", "kakao", "other"]},
+                    "value": {"type": "string"},
+                },
+                "required": ["type", "value"],
+            },
+        },
         "appearance": {"type": "string", "description": "모색/외형 특징"},
         "health_conditions": {"type": "array", "items": {"type": "string"}, "description": "건강 상태"},
         "personality_notes": {"type": "string", "description": "성격/특이사항"},
@@ -49,7 +59,7 @@ _EXAMPLE = ApiSlots(
     weight_kg=3.0,
     rescue_region="제주시 일도이동",
     rescue_date="2026-06-30",
-    shelter_contact="064-710-4805",
+    contact_methods=[ContactMethod(type="phone", value="064-710-4805")],
     appearance="흰색 장모",
     health_conditions=["심장사상충 음성"],
     personality_notes="사람을 잘 따름",
@@ -69,7 +79,11 @@ async def get_meta() -> SlotMetaResponse:
 @router.post("/validate", response_model=SlotValidateResponse, summary="LLM 추출 결과 검증·정규화")
 async def validate_slots(body: SlotValidateRequest) -> SlotValidateResponse:
     data = ApiSlots.model_validate(body.model_dump())
-    missing = [k for k in REQUIRED_KEYS if getattr(data, k) is None]
+    missing = [
+        key
+        for key in REQUIRED_KEYS
+        if getattr(data, key) is None or (key == "contact_methods" and not data.contact_methods)
+    ]
     return SlotValidateResponse(
         data=data,
         missing_required=missing,
